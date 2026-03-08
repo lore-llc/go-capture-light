@@ -1,0 +1,4 @@
+dist/
+lore-watch-light
+.env
+.env.local
