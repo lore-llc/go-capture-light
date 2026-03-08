@@ -14,18 +14,27 @@ Lightweight screen capture agent for [Lore](https://getlore.ai). Streams screens
 
 ## Quick Start
 
-1. Download the latest binary for your platform from [Releases](../../releases).
+The easiest way to install the latest release is via our install script:
 
-2. Make it executable (macOS/Linux):
-   ```bash
-   chmod +x lore-watch-light-*
-   ```
+```bash
+curl -sSfL https://raw.githubusercontent.com/lore-llc/go-capture-light/main/install.sh | sh
+```
+*(This downloads the correct executable for your OS/Architecture and moves it to `/usr/local/bin`)*
 
-3. Run it:
-   ```bash
-   export LORE_API_KEY="your-api-key"
-   ./lore-watch-light-linux-amd64
-   ```
+Alternatively, you can download the binary manually from the [Releases](https://github.com/lore-llc/go-capture-light/releases) page.
+
+Once installed, you can provide your API key either as an environment variable or as a direct command-line flag:
+
+**Using a flag:**
+```bash
+lore-watch-light --api-key="your-api-key"
+```
+
+**Using an environment variable:**
+```bash
+export LORE_API_KEY="your-api-key"
+lore-watch-light
+```
 
 Press `Ctrl+C` to stop.
 
