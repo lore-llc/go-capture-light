@@ -24,6 +24,7 @@ func main() {
 	apiURL := flag.String("api-url", envOrDefault("LORE_API_URL", "https://lore-agent-memory.onrender.com"), "LORE API base URL")
 	task := flag.String("task", "", "Session task description")
 	name := flag.String("name", "", "Session name")
+	userID := flag.String("user-id", envOrDefault("LORE_USER_ID", ""), "User ID for multi-user tracking (optional)")
 	fps := flag.Int("fps", 5, "Capture frames per second")
 	batchInterval := flag.Duration("batch-interval", 3*time.Second, "Interval between batch flushes")
 	flag.Parse()
@@ -40,7 +41,7 @@ func main() {
 	client := NewClient(*apiURL, *apiKey)
 
 	// Start session
-	sessionID, err := client.StartSession(*task, *name)
+	sessionID, err := client.StartSession(*task, *name, *userID)
 	if err != nil {
 		log.Fatalf("Failed to start session: %v", err)
 	}

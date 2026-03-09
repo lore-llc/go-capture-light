@@ -29,10 +29,13 @@ func NewClient(baseURL, apiKey string) *Client {
 }
 
 // StartSession creates a new session and returns the session ID.
-func (c *Client) StartSession(task, name string) (string, error) {
+func (c *Client) StartSession(task, name, userID string) (string, error) {
 	body := map[string]interface{}{
 		"name": name,
 		"task": task,
+	}
+	if userID != "" {
+		body["user_id"] = userID
 	}
 
 	var resp struct {
@@ -46,13 +49,13 @@ func (c *Client) StartSession(task, name string) (string, error) {
 
 // BatchPayload is the request body for the bare ingest endpoint.
 type BatchPayload struct {
-	BatchID        string        `json:"batch_id"`
+	BatchID        string         `json:"batch_id"`
 	Frames         []FramePayload `json:"frames"`
-	Actions        []interface{} `json:"actions"`
-	AppContext     []interface{} `json:"app_context"`
-	AXSnapshots    []interface{} `json:"ax_snapshots"`
-	Clipboard      []interface{} `json:"clipboard"`
-	WindowGeometry []interface{} `json:"window_geometry"`
+	Actions        []interface{}  `json:"actions"`
+	AppContext     []interface{}  `json:"app_context"`
+	AXSnapshots    []interface{}  `json:"ax_snapshots"`
+	Clipboard      []interface{}  `json:"clipboard"`
+	WindowGeometry []interface{}  `json:"window_geometry"`
 }
 
 // FramePayload is a single frame in a batch.

@@ -14,27 +14,18 @@ Lightweight screen capture agent for [Lore](https://getlore.ai). Streams screens
 
 ## Quick Start
 
-The easiest way to install the latest release is via our install script:
+1. Download the latest binary for your platform from [Releases](../../releases).
 
-```bash
-curl -sSfL https://raw.githubusercontent.com/lore-llc/go-capture-light/main/install.sh | sh
-```
-*(This downloads the correct executable for your OS/Architecture and moves it to `/usr/local/bin`)*
+2. Make it executable (macOS/Linux):
+   ```bash
+   chmod +x lore-watch-light-*
+   ```
 
-Alternatively, you can download the binary manually from the [Releases](https://github.com/lore-llc/go-capture-light/releases) page.
-
-Once installed, you can provide your API key either as an environment variable or as a direct command-line flag:
-
-**Using a flag:**
-```bash
-lore-watch-light --api-key="your-api-key"
-```
-
-**Using an environment variable:**
-```bash
-export LORE_API_KEY="your-api-key"
-lore-watch-light
-```
+3. Run it:
+   ```bash
+   export LORE_API_KEY="your-api-key"
+   ./lore-watch-light-linux-amd64
+   ```
 
 Press `Ctrl+C` to stop.
 
@@ -46,11 +37,29 @@ Press `Ctrl+C` to stop.
 | `--api-url` | `https://lore-agent-memory.onrender.com` | Lore API base URL |
 | `--task` | `""` | Session task description |
 | `--name` | `""` | Session name |
+| `--user-id` | `$LORE_USER_ID` | User ID for multi-user tracking (optional — defaults to API key owner) |
 | `--fps` | `10` | Capture frames per second |
 | `--batch-interval` | `3s` | Interval between batch flushes |
 | `--version` | | Print version and exit |
 
-You can also set `LORE_API_KEY` and `LORE_API_URL` in a `.env` or `.env.local` file in the working directory.
+You can also set `LORE_API_KEY`, `LORE_API_URL`, and `LORE_USER_ID` in a `.env` or `.env.local` file in the working directory.
+
+### Multi-User Deployment
+
+When deploying across many VMs with a shared API key, pass `--user-id` to track each user's sessions separately:
+
+```bash
+./lore-watch-light --api-key "$SHARED_KEY" --user-id "user-42"
+```
+
+Query a user's sessions later via:
+
+```bash
+curl "https://lore-agent-memory.onrender.com/v1/sessions/list?user_id=user-42" \
+  -H "X-API-Key: $SHARED_KEY"
+```
+
+You can also filter with `&limit=50` to control the number of results.
 
 ## Linux Screenshot Tools
 
