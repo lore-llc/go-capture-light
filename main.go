@@ -20,7 +20,6 @@ func main() {
 	loadDotEnv(".env.local")
 
 	showVersion := flag.Bool("version", false, "Print version and exit")
-	apiKey := flag.String("api-key", envOrDefault("LORE_API_KEY", ""), "API key for authentication")
 	apiURL := flag.String("api-url", envOrDefault("LORE_API_URL", "https://lore-agent-memory.onrender.com"), "LORE API base URL")
 	task := flag.String("task", "", "Session task description")
 	name := flag.String("name", "", "Session name")
@@ -32,10 +31,6 @@ func main() {
 	if *showVersion {
 		fmt.Println("lore-watch-light", version)
 		os.Exit(0)
-	}
-
-	if *apiKey == "" {
-		log.Fatal("API key required: set LORE_API_KEY or pass --api-key")
 	}
 
 	var maxWidth int
@@ -54,7 +49,7 @@ func main() {
 		log.Fatal("ffmpeg not found — install ffmpeg to use lore-watch-light")
 	}
 
-	client := NewClient(*apiURL, *apiKey)
+	client := NewClient(*apiURL)
 
 	// Start session
 	sessionID, err := client.StartSession(*task, *name, *userID)

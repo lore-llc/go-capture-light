@@ -14,15 +14,13 @@ import (
 // Client is a thin HTTP client for the LORE API.
 type Client struct {
 	baseURL    string
-	apiKey     string
 	httpClient *http.Client
 }
 
 // NewClient creates a new LORE API client.
-func NewClient(baseURL, apiKey string) *Client {
+func NewClient(baseURL string) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
-		apiKey:  apiKey,
 		httpClient: &http.Client{
 			Timeout: 15 * time.Second,
 		},
@@ -63,12 +61,12 @@ type SegmentBatchPayload struct {
 
 // VideoSegment holds the H.264 .ts segment data sent alongside the batch.
 type VideoSegment struct {
-	Format       string `json:"format"`        // "mpegts"
-	Codec        string `json:"codec"`         // "h264"
-	DurationSec  int    `json:"duration_sec"`  // segment duration (3)
-	Index        int    `json:"index"`         // segment sequence number
-	Timestamp    string `json:"timestamp"`     // RFC3339Nano
-	DataBase64   string `json:"data_base64"`   // base64-encoded .ts bytes
+	Format      string `json:"format"`       // "mpegts"
+	Codec       string `json:"codec"`        // "h264"
+	DurationSec int    `json:"duration_sec"` // segment duration (3)
+	Index       int    `json:"index"`        // segment sequence number
+	Timestamp   string `json:"timestamp"`    // RFC3339Nano
+	DataBase64  string `json:"data_base64"`  // base64-encoded .ts bytes
 }
 
 // actionToServerFormat converts an InputAction to the server's StreamAction shape:
@@ -147,9 +145,6 @@ func (c *Client) doJSON(method, path string, body interface{}, result interface{
 		return fmt.Errorf("request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set("X-API-Key", c.apiKey)
-	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
