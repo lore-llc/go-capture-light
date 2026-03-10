@@ -19,6 +19,7 @@ type WatcherConfig struct {
 	SessionID     string
 	FPS           int
 	BatchInterval time.Duration
+	MaxWidth      int // Max screenshot width in px (0 = no resize)
 }
 
 // Watcher captures screenshots and streams batches.
@@ -58,8 +59,14 @@ func (w *Watcher) Start() {
 	defer captureTicker.Stop()
 	defer batchTicker.Stop()
 
-	log.Printf("Watching (fps=%d, batch=%s, session=%s)",
-		w.config.FPS, w.config.BatchInterval, w.config.SessionID)
+	resLabel := "native"
+	if w.config.MaxWidth == MaxWidth720p {
+		resLabel = "720p"
+	} else if w.config.MaxWidth == MaxWidth1080p {
+		resLabel = "1080p"
+	}
+	log.Printf("Watching (fps=%d, batch=%s, resolution=%s, max_width=%dpx, session=%s)",
+		w.config.FPS, w.config.BatchInterval, resLabel, w.config.MaxWidth, w.config.SessionID)
 
 	for {
 		select {
@@ -68,7 +75,7 @@ func (w *Watcher) Start() {
 			close(w.doneCh)
 			return
 		case <-captureTicker.C:
-			w.captureFrame()
+			go w.captureFrame() // async: capture+resize can exceed tick interval
 		case <-batchTicker.C:
 			go w.flushBatch()
 		}
@@ -81,13 +88,16 @@ func (w *Watcher) Stop() {
 	<-w.doneCh
 }
 
-// captureFrame takes a screenshot and queues it.
+// captureFrame takes a screenshot, downscales if needed, and queues it.
 func (w *Watcher) captureFrame() {
 	data, err := w.capture()
 	if err != nil {
 		log.Printf("Capture error: %v", err)
 		return
 	}
+
+	// Downscale to max width (saves bandwidth + server RAM)
+	data = MaybeResize(data, w.config.MaxWidth)
 
 	w.pendingMu.Lock()
 	w.pending = append(w.pending, CapturedFrame{

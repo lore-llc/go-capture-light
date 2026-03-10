@@ -25,8 +25,9 @@ func main() {
 	task := flag.String("task", "", "Session task description")
 	name := flag.String("name", "", "Session name")
 	userID := flag.String("user-id", envOrDefault("LORE_USER_ID", ""), "User ID for multi-user tracking (optional)")
-	fps := flag.Int("fps", 5, "Capture frames per second")
+	fps := flag.Int("fps", 4, "Capture frames per second")
 	batchInterval := flag.Duration("batch-interval", 3*time.Second, "Interval between batch flushes")
+	resolution := flag.String("resolution", "720p", "Screenshot resolution: 720p (1280px) or 1080p (1920px)")
 	flag.Parse()
 
 	if *showVersion {
@@ -36,6 +37,16 @@ func main() {
 
 	if *apiKey == "" {
 		log.Fatal("API key required: set LORE_API_KEY or pass --api-key")
+	}
+
+	var maxWidth int
+	switch *resolution {
+	case "720p", "720":
+		maxWidth = MaxWidth720p
+	case "1080p", "1080":
+		maxWidth = MaxWidth1080p
+	default:
+		log.Fatalf("Invalid --resolution %q: must be 720p or 1080p", *resolution)
 	}
 
 	client := NewClient(*apiURL, *apiKey)
@@ -58,6 +69,7 @@ func main() {
 		SessionID:     sessionID,
 		FPS:           *fps,
 		BatchInterval: *batchInterval,
+		MaxWidth:      maxWidth,
 	})
 
 	// Handle signals for clean shutdown
