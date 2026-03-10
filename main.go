@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 )
 
 var version = "dev"
@@ -26,7 +26,6 @@ func main() {
 	name := flag.String("name", "", "Session name")
 	userID := flag.String("user-id", envOrDefault("LORE_USER_ID", ""), "User ID for multi-user tracking (optional)")
 	fps := flag.Int("fps", 4, "Capture frames per second")
-	batchInterval := flag.Duration("batch-interval", 3*time.Second, "Interval between batch flushes")
 	resolution := flag.String("resolution", "720p", "Screenshot resolution: 720p (1280px) or 1080p (1920px)")
 	flag.Parse()
 
@@ -42,11 +41,17 @@ func main() {
 	var maxWidth int
 	switch *resolution {
 	case "720p", "720":
-		maxWidth = MaxWidth720p
+		maxWidth = 1280
 	case "1080p", "1080":
-		maxWidth = MaxWidth1080p
+		maxWidth = 1920
 	default:
 		log.Fatalf("Invalid --resolution %q: must be 720p or 1080p", *resolution)
+	}
+
+	// Require ffmpeg
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		log.Fatal("ffmpeg not found — install ffmpeg to use lore-watch-light")
 	}
 
 	client := NewClient(*apiURL, *apiKey)
@@ -58,19 +63,31 @@ func main() {
 	}
 	fmt.Printf("session_id=%s\n", sessionID)
 
-	// Detect screenshot tool
-	captureFn, err := DetectCaptureFn()
+	// Start ffmpeg capture
+	capture, err := NewFFmpegCapture(FFmpegConfig{
+		FFmpegPath: ffmpegPath,
+		SessionID:  sessionID,
+		FPS:        *fps,
+		MaxWidth:   maxWidth,
+		SegmentSec: 3,
+	})
 	if err != nil {
-		log.Fatalf("No screenshot tool found: %v", err)
+		log.Fatalf("Failed to initialize ffmpeg capture: %v", err)
+	}
+	defer capture.Cleanup()
+
+	if err := capture.Start(); err != nil {
+		log.Fatalf("Failed to start ffmpeg: %v", err)
 	}
 
-	// Set up watcher
-	watcher := NewWatcher(client, captureFn, WatcherConfig{
-		SessionID:     sessionID,
-		FPS:           *fps,
-		BatchInterval: *batchInterval,
-		MaxWidth:      maxWidth,
-	})
+	// Start input tracker (xinput on Linux, no-op on macOS)
+	inputTracker := NewInputTracker()
+	if err := inputTracker.Start(); err != nil {
+		log.Printf("Warning: input tracking failed to start: %v", err)
+	}
+
+	// Start segment watcher
+	segWatcher := NewSegmentWatcher(client, capture.SegmentDir(), sessionID, capture.segListPath, capture.StartedAt, inputTracker)
 
 	// Handle signals for clean shutdown
 	sigCh := make(chan os.Signal, 1)
@@ -79,11 +96,13 @@ func main() {
 	go func() {
 		<-sigCh
 		fmt.Println("\nShutting down...")
-		watcher.Stop()
+		inputTracker.Stop()
+		capture.Stop()
+		segWatcher.FlushRemaining()
+		segWatcher.Stop()
 	}()
 
-	// Block until stopped
-	watcher.Start()
+	segWatcher.Start()
 	fmt.Println("Done.")
 }
 

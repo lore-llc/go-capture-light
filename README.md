@@ -1,30 +1,62 @@
 # lore-watch-light
 
-Lightweight screen capture agent for [Lore](https://getlore.ai). Streams screenshots to the Lore API whenever your screen changes. Zero runtime dependencies — just download the binary and run.
+Lightweight screen capture agent for [Lore](https://getlore.ai). Uses a persistent `ffmpeg` process to capture your screen as H.264 video segments and stream them to the Lore API.
+
+## Install
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/lore-llc/go-capture-light/main/install.sh | sh
+```
+
+This downloads the latest binary for your platform and installs `ffmpeg` (+ `xinput` on Linux for input tracking) if not already present.
 
 ## How It Works
 
-1. Captures screenshots as **JPEG** at the configured FPS rate (default 4 fps)
-2. **Downscales** to `--resolution` (default `720p` / 1280px wide) using **ApproxBiLinear** interpolation, then re-encodes at **JPEG quality 65** to minimize bandwidth and server memory usage
-3. Queues frames in a buffer and flushes them as **micro-batches** to the Lore API at the configured interval (default 3s)
-4. On each flush, the buffer is **drained completely** — frames are sent and then discarded
+1. Spawns a single persistent **ffmpeg** process that captures the screen at the configured FPS (default 4)
+2. ffmpeg **downscales** to `--resolution` (default `720p` / 1280px wide) and encodes as **H.264** with `ultrafast` preset
+3. Outputs self-contained **3-second MPEG-TS segments** (`.ts` files) to a temp directory
+4. On Linux, spawns **xinput** to capture mouse and keyboard events (clicks, scrolls, moves, drags, keystrokes)
+5. A segment watcher polls for new `.ts` files, drains buffered input actions, and **POSTs each segment + actions** to the Lore API
+6. Segments are deleted locally after successful upload
+
+## v0.2.0 Breaking Changes
+
+v0.2.0 replaces the entire capture pipeline. **This is not backward-compatible with v0.1.x.**
+
+| | v0.1.x (JPEG per-frame) | v0.2.0 (H.264 segments) |
+|---|---|---|
+| Capture method | `screencapture`/`grim`/`scrot` spawned 4x/sec | Single persistent `ffmpeg` process |
+| Encoding | Individual JPEG frames (quality 65) | H.264 video (`libx264 ultrafast`) |
+| Transport | Base64 JSON with `frames[]` | JSON with `frames: []` + `video_segment` (same endpoint) |
+| Scaling | Go-side decode + ApproxBiLinear resize + re-encode | ffmpeg `-vf scale=1280:-2` |
+| Dependencies | Go binary only + screenshot tool | Go binary + **ffmpeg** |
+
+### Removed CLI flags
+
+- `--batch-interval` — no longer applicable (segments are always 3 seconds)
+- `--legacy` — no backward-compatible mode
+
+### Removed dependencies
+
+- `golang.org/x/image` — no longer needed (ffmpeg handles scaling)
+- `screencapture` / `grim` / `scrot` / `import` — no longer needed
+
+### New dependencies
+
+- **ffmpeg** with `libx264` support (installed automatically by `install.sh`)
+- **xinput** on Linux (installed automatically by `install.sh`) — for mouse + keyboard input tracking via X11
 
 ## Quick Start
 
-1. Download the latest binary for your platform from [Releases](../../releases).
+1. Install (see above), or download from [Releases](../../releases).
 
-2. Make it executable (macOS/Linux):
-   ```bash
-   chmod +x lore-watch-light-*
-   ```
-
-3. Run it:
+2. Run:
    ```bash
    export LORE_API_KEY="your-api-key"
-   ./lore-watch-light-linux-amd64
+   lore-watch-light
    ```
 
-Press `Ctrl+C` to stop.
+3. Press `Ctrl+C` to stop. ffmpeg finalizes the current segment, the watcher sends it, then exits cleanly.
 
 ## CLI Flags
 
@@ -34,183 +66,232 @@ Press `Ctrl+C` to stop.
 | `--api-url` | `https://lore-agent-memory.onrender.com` | Lore API base URL |
 | `--task` | `""` | Session task description |
 | `--name` | `""` | Session name |
-| `--user-id` | `$LORE_USER_ID` | User ID for multi-user tracking (optional — defaults to API key owner) |
+| `--user-id` | `$LORE_USER_ID` | User ID for multi-user tracking (optional) |
 | `--fps` | `4` | Capture frames per second |
-| `--batch-interval` | `3s` | Interval between batch flushes |
-| `--resolution` | `720p` | Screenshot resolution: `720p` (1280px) or `1080p` (1920px) |
+| `--resolution` | `720p` | Target resolution: `720p` (1280px) or `1080p` (1920px) |
 | `--version` | | Print version and exit |
 
 You can also set `LORE_API_KEY`, `LORE_API_URL`, and `LORE_USER_ID` in a `.env` or `.env.local` file in the working directory.
 
-## Memory & Bandwidth Analysis
+## Architecture
 
-The `--resolution` flag controls the tradeoff between image quality and resource usage. Screenshots are captured at native resolution, then downscaled before encoding and sending.
+```
+ffmpeg (1 persistent process)
+    captures screen → scales to 720p → encodes H.264
+    → outputs 3-second .ts segments to /tmp/lore_{session_id}/
 
-### Per-frame size by resolution
+xinput (1 persistent process, Linux only)
+    captures mouse + keyboard events from X11
+    → parsed by Go state machine → buffered as InputAction structs
+    → adaptive throttle: 20ms/50ms/100ms for mouse moves based on buffer pressure
 
-| Display | Native | `--resolution 1080p` | `--resolution 720p` (default) |
-|---------|--------|---------------------------|-------------------------------------|
-| MacBook Pro 14" (3024x1964) | ~2-4 MB | ~500-800 KB | ~200-400 KB |
-| MacBook Air 13" (2560x1664) | ~1.5-3 MB | ~400-700 KB | ~150-350 KB |
-| 1920x1080 monitor | ~500-800 KB | no resize | ~200-400 KB |
+Go segment watcher (polls every 500ms)
+    → reads new .ts file bytes
+    → drains buffered input actions (clicks, keys, scrolls, moves, drags)
+    → wraps in JSON with video_segment + actions[]
+    → HTTP POST /v1/sessions/{session_id}/ingest/stream  (same endpoint as v0.1.x)
+    → deletes local .ts file after successful send
+```
 
-### Client RAM usage (at default 4 fps, 3s batch interval = ~10-14 frames/batch)
+### ffmpeg command (macOS)
 
-| Component | Native (3K, no downscale) | `--resolution 720p` (default) |
-|-----------|------------------------------|-------------------------------|
-| Go runtime + binary | ~15 MB | ~15 MB |
-| Pending frame buffer (15 frames) | ~30-60 MB | ~3-6 MB |
-| Resize working memory (1 frame decode+scale+encode) | 0 MB | ~50 MB peak, released per frame |
-| JSON + base64 encoding (per batch) | ~40-80 MB | ~4-8 MB |
-| **Total peak** | **~85-155 MB** | **~72-79 MB** |
+```bash
+ffmpeg -y -f avfoundation -framerate 4 -capture_cursor 1 -i "1:none" \
+  -vf "scale=1280:-2" \
+  -c:v libx264 -preset ultrafast -tune zerolatency \
+  -g 12 -keyint_min 12 \
+  -f segment -segment_time 3 -segment_format mpegts \
+  -reset_timestamps 1 \
+  /tmp/lore_{session_id}/segment_%05d.ts
+```
 
-> Even with the decode/resize cost, the default 720p setting uses **less total RAM** than native because the pending buffer and JSON payload are ~10x smaller.
+### ffmpeg command (Linux X11)
 
-### Server RAM impact (per ingest request, Render 2 GB instance)
+```bash
+ffmpeg -y -f x11grab -framerate 4 -i :0 \
+  -vf "scale=1280:-2" \
+  -c:v libx264 -preset ultrafast -tune zerolatency \
+  -g 12 -keyint_min 12 \
+  -f segment -segment_time 3 -segment_format mpegts \
+  -reset_timestamps 1 \
+  /tmp/lore_{session_id}/segment_%05d.ts
+```
 
-| | Native (3K, no downscale) | `--resolution 720p` (default) |
-|---|------------------------------|-------------------------------|
-| HTTP body received | ~40-80 MB | ~4-8 MB |
-| Pydantic parse (copies strings) | ~40-80 MB | ~4-8 MB |
-| Base64 decode (bytes) | ~30-60 MB | ~3-6 MB |
-| **Peak per request** | **~110-220 MB** | **~11-22 MB** |
-| Requests before 2 GB OOM (~400 MB base) | ~8 | ~70+ |
+### ffmpeg command (Linux Wayland)
 
-### Frame count per batch
+```bash
+ffmpeg -y -f pipewire -framerate 4 -i default \
+  -vf "scale=1280:-2" \
+  ...same encoding flags...
+```
 
-At 4 fps with a 3s batch interval, the theoretical frame count is 12 per batch. In practice, the actual count **varies** (typically 10–14) because capture and resize run asynchronously:
+### Key ffmpeg flags
 
-- **Fewer than 12**: Screenshot capture (`screencapture`/`grim`) or resize took longer than the tick interval (250ms), so some frames weren't ready before the batch flush.
-- **More than 12**: A previous slow frame finishes just after a batch flush, stacking into the next batch along with its normal frames.
+| Flag | Purpose |
+|---|---|
+| `-framerate 4` | Capture at 4 fps |
+| `-capture_cursor 1` | Include cursor in capture (macOS) |
+| `-vf "scale=1280:-2"` | Downscale to 720p width, `-2` ensures even height (H.264 requirement) |
+| `-preset ultrafast` | Minimize CPU usage |
+| `-tune zerolatency` | No buffering, emit frames immediately |
+| `-g 12 -keyint_min 12` | Force keyframe every 12 frames (= 3 seconds at 4fps) |
+| `-f segment -segment_time 3` | Output self-contained 3-second segments |
+| `-segment_format mpegts` | MPEG-TS container (concatenation-friendly) |
+| `-reset_timestamps 1` | Each segment starts at t=0 |
 
-This is expected behavior — no frames are lost, they just shift between adjacent batches.
+## HTTP Transport
 
-### CPU usage
+Uses the **same endpoint** as v0.1.x, with the same JSON structure but `frames: []` and a new `video_segment` field:
 
-Each capture tick spawns a goroutine that runs: screenshot → JPEG decode → ApproxBiLinear downscale → JPEG re-encode (quality 65). At 4 fps with ~100-150ms per cycle, there is typically **1 concurrent goroutine** at any time.
+```
+POST /v1/sessions/{session_id}/ingest/stream
+Content-Type: application/json
+X-API-Key: {api_key}
+```
 
-| Component | CPU cost |
-|-----------|----------|
-| `screencapture` / `grim` (external process) | Low — OS handles it |
-| JPEG decode (per frame) | Light — ~5-10ms |
-| ApproxBiLinear scale (per frame) | Light — ~30-50ms |
-| JPEG encode at quality 65 (per frame) | Light — ~5-15ms |
-| **Total per core** | **~5-8% of one core** at 4 fps |
+```json
+{
+  "batch_id": "segment-0",
+  "frames": [],
+  "actions": [
+    {"type": "click", "timestamp": "2026-03-10T12:34:57.123Z", "metadata": {"x": 640, "y": 320}},
+    {"type": "keypress", "timestamp": "2026-03-10T12:34:58.456Z", "metadata": {"key": "a"}},
+    {"type": "move", "timestamp": "2026-03-10T12:34:58.789Z", "metadata": {"x": 700, "y": 350}}
+  ],
+  "app_context": [],
+  "ax_snapshots": [],
+  "clipboard": [],
+  "window_geometry": [],
+  "video_segment": {
+    "format": "mpegts",
+    "codec": "h264",
+    "duration_sec": 3,
+    "index": 0,
+    "timestamp": "2026-03-10T12:34:56.789Z",
+    "data_base64": "<base64-encoded .ts segment>"
+  }
+}
+```
 
-> **Default config (4 fps, 720p, ApproxBiLinear, quality 65)**: ~5-8% of one CPU core, ~72-79 MB peak RAM, ~1-3 MB/s upload. This is lightweight enough to run alongside normal desktop work on both macOS and Linux without noticeable impact.
+Typical payload size: **~100-350 KB** per 3-second segment (vs ~4-8 MB in v0.1.x).
 
-### Scaling algorithm: ApproxBiLinear vs CatmullRom
+See [SERVER-CHANGES-REQUIRED.md](SERVER-CHANGES-REQUIRED.md) for the server-side changes needed to handle the new `video_segment` field.
 
-We use `draw.ApproxBiLinear` from `golang.org/x/image/draw` for downscaling. This is a deliberate tradeoff:
+## Resource Usage
 
-| | ApproxBiLinear | CatmullRom |
-|---|----------------|------------|
-| Speed | ~30-50ms per frame | ~100-150ms per frame |
-| CPU at 4 fps | ~5-8% of one core | ~15-20% of one core |
-| Quality | Good — slight softness on small text | Excellent — sharp text/UI edges |
-| Best for | Screen recordings, general monitoring | OCR, detailed UI analysis |
+### v0.2.0 (H.264 segments) vs v0.1.x (JPEG per-frame)
 
-For screen recording and playback, ApproxBiLinear quality is more than sufficient. Text remains readable at 720p and the ~3x speed improvement significantly reduces CPU load, especially on single-core VMs or shared machines.
+| Metric | v0.1.x (JPEG) | v0.2.0 (H.264) | Improvement |
+|---|---|---|---|
+| Bandwidth | ~1-2 MB/s | ~0.05-0.15 MB/s | **~10-20x less** |
+| HTTP payload per batch | ~4-8 MB (base64 JSON) | ~70-250 KB (binary .ts) | **~20-30x less** |
+| Client RAM | ~72-79 MB | ~35-50 MB | **~40% less** |
+| Client CPU | ~5-8% one core | ~3-5% one core | **~40% less** |
+| Process spawns | 4/sec (screencapture) | 1 total (ffmpeg) | **eliminated** |
+| Storage per hour | ~1.7-3.5 GB | ~150-500 MB | **~7-10x less** |
 
-Both algorithms are pure Go (`golang.org/x/image/draw`) — no CGo, no platform-specific dependencies. Works identically on macOS and Linux.
+### Server RAM impact (per ingest request)
 
-### JPEG quality: 65 vs 80
+| | v0.1.x (JSON + base64) | v0.2.0 (binary .ts) |
+|---|---|---|
+| HTTP body | ~4-8 MB | ~70-250 KB |
+| Processing overhead | ~11-22 MB | ~1-2 MB |
+| **Peak per request** | **~11-22 MB** | **~1-2 MB** |
+| Concurrent requests before 2GB OOM | ~70 | **~800+** |
 
-Re-encoding at quality 65 instead of 80 reduces file size by ~30-40% with minimal visual difference for screenshots:
+### Segment size breakdown (3s at 4fps = 12 frames per segment)
 
-| Quality | Avg frame size (720p) | Visual impact |
-|---------|----------------------|---------------|
-| 80 | ~200-400 KB | Baseline — sharp |
-| 65 | ~120-250 KB | Slight compression artifacts, text still fully readable |
-| 50 | ~80-150 KB | Noticeable artifacts around text edges |
+| Component | Size |
+|---|---|
+| I-frame (keyframe, 1 per segment) | ~50-150 KB |
+| P-frames (delta, 11 per segment) | ~2-10 KB each |
+| **Total per segment** | **~70-250 KB** |
 
-Quality 65 is the sweet spot: text remains clear for playback and review, while keeping bandwidth and server memory ~30% lower than quality 80.
+### FPS scaling
 
-### FPS optimization
+| FPS | Frames/segment | CPU (one core) | Bandwidth |
+|-----|----------------|----------------|-----------|
+| 2 | 6 | ~1-3% | ~0.02-0.08 MB/s |
+| **4** (default) | **12** | **~3-5%** | **~0.05-0.15 MB/s** |
+| 5 | 15 | ~4-6% | ~0.07-0.2 MB/s |
+| 10 | 30 | ~8-12% | ~0.15-0.4 MB/s |
 
-The default FPS of 4 balances capture fidelity against resource usage:
+## Segment Stitching (Server-Side)
 
-| FPS | Tick interval | Frames/batch (3s) | CPU (one core) | Bandwidth |
-|-----|--------------|-------------------|----------------|-----------|
-| 2 | 500ms | ~6 | ~2-4% | ~0.5-1 MB/s |
-| 3 | 333ms | ~9 | ~4-6% | ~0.7-1.5 MB/s |
-| **4** (default) | **250ms** | **~12** | **~5-8%** | **~1-2 MB/s** |
-| 5 | 200ms | ~15 | ~7-10% | ~1-3 MB/s |
-| 10 | 100ms | ~30 | ~15-20% | ~2-5 MB/s |
+MPEG-TS segments are designed for concatenation. On the server:
 
-- **4 fps** captures enough detail for smooth playback and UI state tracking without wasting resources.
-- **2-3 fps** is recommended for resource-constrained environments (single-core VMs, CI runners).
-- **5+ fps** is useful if you need to catch fast UI transitions but comes with proportionally higher CPU and bandwidth cost.
+```bash
+# Lossless concatenation — no re-encoding
+ffmpeg -f concat -safe 0 -i segments.txt -c copy session_full.mp4
+```
 
-### Bandwidth per batch
+Or on-the-fly as segments arrive:
 
-| | Native 3K | 1080p | 720p (default) |
-|---|-----------|-------|----------------|
-| Raw JPEG | ~30-60 MB | ~8-12 MB | ~3-6 MB |
-| Base64 JSON payload | ~40-80 MB | ~10-16 MB | ~4-8 MB |
-| Upload rate (per 3s) | ~13-27 MB/s | ~3-5 MB/s | ~1-3 MB/s |
+```python
+with open(f"sessions/{session_id}/full.ts", "ab") as f:
+    f.write(segment_bytes)
+```
 
-### Storage estimates (default settings: 4 fps, 720p, quality 65)
+## Graceful Shutdown
 
-#### Frame data (individual JPEGs stored server-side)
+On `SIGINT` / `SIGTERM` (Ctrl+C, `kill`, systemd stop):
 
-| Duration | Frames captured | Estimated storage |
-|----------|----------------|-------------------|
-| 1 hour | 14,400 | ~1.7 – 3.5 GB |
-| 24 hours | 345,600 | ~41 – 84 GB |
+1. Input tracker is stopped (xinput killed, remaining actions buffered)
+2. Go sends `SIGINT` to the ffmpeg subprocess
+3. ffmpeg finalizes the current `.ts` segment and exits
+4. Segment watcher picks up the final segment + drains remaining input actions
+5. Final segment + actions are POSTed to the server
+6. Process exits — **zero data loss on clean shutdown**
 
-> Based on ~120–250 KB per frame at 720p / JPEG quality 65. Actual sizes depend on screen content — text-heavy screens compress better than media-rich ones.
+On hard crash (`SIGKILL`, power loss): at most ~3 seconds of footage is lost. MPEG-TS is resilient to truncation — partial segments are often still playable.
 
-#### Equivalent video storage (H.264 720p comparison)
+## Platform Support
 
-If the same frames were encoded as H.264 video instead of individual JPEGs, inter-frame compression would dramatically reduce size:
+| Platform | Screen capture | Input tracking | Status |
+|----------|---------------|----------------|--------|
+| macOS (Intel + ARM) | `avfoundation` via ffmpeg | Not supported (no-op stub) | Screen capture only |
+| Linux X11 | `x11grab` via ffmpeg | `xinput` (mouse + keyboard) | Full support |
+| Linux Wayland | `pipewire` via ffmpeg | Not yet implemented | Experimental — PipeWire support in ffmpeg is still maturing |
 
-| Duration | JPEG frames (current) | H.264 video equivalent |
-|----------|-----------------------|------------------------|
-| 1 hour | ~1.7 – 3.5 GB | ~100 – 300 MB |
-| 24 hours | ~41 – 84 GB | ~2.4 – 7.2 GB |
+> **Note:** On macOS, the Go light client captures screen video via ffmpeg but does **not** track mouse/keyboard input. For full input tracking on macOS, use the [Swift client](../pre-alpha-swift-ios/) instead.
 
-> H.264 estimates assume ~0.2–0.7 Mbps for 720p screen content at 4 fps. Screen recordings compress extremely well due to low motion and large static regions between frames. The current architecture uses individual JPEGs for simplicity and random-access retrieval — each frame can be queried independently without decoding a video stream.
-
-### Multi-User Deployment
-
-When deploying across many VMs with a shared API key, pass `--user-id` to track each user's sessions separately:
+## Multi-User Deployment
 
 ```bash
 ./lore-watch-light --api-key "$SHARED_KEY" --user-id "user-42"
 ```
 
-Query a user's sessions later via:
+Query sessions:
 
 ```bash
 curl "https://lore-agent-memory.onrender.com/v1/sessions/list?user_id=user-42" \
   -H "X-API-Key: $SHARED_KEY"
 ```
 
-You can also filter with `&limit=50` to control the number of results.
-
-## Linux Screenshot Tools
-
-On Linux, you need one of the following installed:
-
-| Tool | Display Server |
-|------|---------------|
-| `grim` | Wayland |
-| `import` (ImageMagick) | X11 |
-| `scrot` | X11 |
-
-On macOS, the built-in `screencapture` command is used automatically.
-
 ## Building from Source
 
-Requires Go 1.21+.
+Requires Go 1.21+ and ffmpeg.
 
 ```bash
 # Build for current platform
 make build
 
 # Build for all platforms
-make VERSION=0.1.0 build-all
+make VERSION=0.2.0 build-all
 ```
 
 Binaries are output to `dist/`.
+
+## File Structure
+
+```
+pre-alpha-client-go-light/
+  main.go              # Entry point, CLI flags, session + ffmpeg + input tracker + watcher lifecycle
+  ffmpeg.go            # FFmpeg subprocess management, platform detection, command building
+  input_linux.go       # Input tracking via xinput (mouse + keyboard) — Linux only
+  input_darwin.go      # Input tracking stub (no-op) — macOS
+  segment_watcher.go   # Polls temp dir for .ts segments, drains input actions, sends + cleans up
+  client.go            # HTTP client (StartSession, SendSegment with actions)
+  install.sh           # One-line installer (binary + ffmpeg + xinput)
+  Makefile             # Build targets
+```

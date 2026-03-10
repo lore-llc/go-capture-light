@@ -1,5 +1,3 @@
 module github.com/lore-llc/lore-watch-light
 
 go 1.24.0
-
-require golang.org/x/image v0.36.0

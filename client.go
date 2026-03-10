@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -47,25 +48,85 @@ func (c *Client) StartSession(task, name, userID string) (string, error) {
 	return resp.SessionID, nil
 }
 
-// BatchPayload is the request body for the bare ingest endpoint.
-type BatchPayload struct {
+// SegmentBatchPayload is the request body sent to the existing ingest/stream endpoint.
+// Matches the old BatchPayload shape but with frames=[] and a new video_segment field.
+type SegmentBatchPayload struct {
 	BatchID        string        `json:"batch_id"`
-	Frames         []FramePayload `json:"frames"`
+	Frames         []interface{} `json:"frames"`
 	Actions        []interface{} `json:"actions"`
 	AppContext     []interface{} `json:"app_context"`
 	AXSnapshots    []interface{} `json:"ax_snapshots"`
 	Clipboard      []interface{} `json:"clipboard"`
 	WindowGeometry []interface{} `json:"window_geometry"`
+	VideoSegment   *VideoSegment `json:"video_segment,omitempty"`
 }
 
-// FramePayload is a single frame in a batch.
-type FramePayload struct {
-	ScreenshotBase64 string `json:"screenshot_base64"`
-	Timestamp        string `json:"timestamp"`
+// VideoSegment holds the H.264 .ts segment data sent alongside the batch.
+type VideoSegment struct {
+	Format       string `json:"format"`        // "mpegts"
+	Codec        string `json:"codec"`         // "h264"
+	DurationSec  int    `json:"duration_sec"`  // segment duration (3)
+	Index        int    `json:"index"`         // segment sequence number
+	Timestamp    string `json:"timestamp"`     // RFC3339Nano
+	DataBase64   string `json:"data_base64"`   // base64-encoded .ts bytes
 }
 
-// SendBareStreamBatch sends a micro-batch to the bare ingest endpoint.
-func (c *Client) SendBareStreamBatch(sessionID string, batch BatchPayload) error {
+// actionToServerFormat converts an InputAction to the server's StreamAction shape:
+// { "type": "...", "timestamp": "...", "metadata": { "x": ..., "y": ..., "key": ..., "modifiers": [...] } }
+func actionToServerFormat(a InputAction) map[string]interface{} {
+	meta := map[string]interface{}{}
+	if a.X != 0 || a.Y != 0 {
+		meta["x"] = a.X
+		meta["y"] = a.Y
+	}
+	if a.Key != "" {
+		meta["key"] = a.Key
+	}
+	if len(a.Modifiers) > 0 {
+		meta["modifiers"] = a.Modifiers
+	}
+
+	doc := map[string]interface{}{
+		"type":      a.Type,
+		"timestamp": a.Timestamp,
+	}
+	if len(meta) > 0 {
+		doc["metadata"] = meta
+	}
+	return doc
+}
+
+// SendSegment sends a .ts segment to the existing ingest/stream endpoint.
+func (c *Client) SendSegment(sessionID string, segmentIndex int, tsData []byte, timestamp time.Time, actions []InputAction) error {
+	// Convert actions to server format
+	var actionDocs []interface{}
+	if len(actions) > 0 {
+		actionDocs = make([]interface{}, len(actions))
+		for i, a := range actions {
+			actionDocs[i] = actionToServerFormat(a)
+		}
+	} else {
+		actionDocs = []interface{}{}
+	}
+
+	batch := SegmentBatchPayload{
+		BatchID:        fmt.Sprintf("segment-%d", segmentIndex),
+		Frames:         []interface{}{},
+		Actions:        actionDocs,
+		AppContext:     []interface{}{},
+		AXSnapshots:    []interface{}{},
+		Clipboard:      []interface{}{},
+		WindowGeometry: []interface{}{},
+		VideoSegment: &VideoSegment{
+			Format:      "mpegts",
+			Codec:       "h264",
+			DurationSec: 3,
+			Index:       segmentIndex,
+			Timestamp:   timestamp.Format(time.RFC3339Nano),
+			DataBase64:  base64.StdEncoding.EncodeToString(tsData),
+		},
+	}
+
 	path := fmt.Sprintf("/v1/sessions/%s/ingest/stream", sessionID)
 	return c.doJSON("POST", path, batch, nil)
 }
