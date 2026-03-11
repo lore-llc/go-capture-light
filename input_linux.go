@@ -55,9 +55,8 @@ func (t *InputTracker) Start() error {
 
 	xinputPath, err := exec.LookPath("xinput")
 	if err != nil {
-		log.Printf("xinput not found — input tracking disabled")
 		close(t.doneCh)
-		return nil
+		return fmt.Errorf("xinput not found — install xinput for input tracking")
 	}
 
 	t.cmd = exec.Command(xinputPath, "test-xi2", "--root")
@@ -364,12 +363,12 @@ var x11KeycodeMap = map[int]string{
 	57: "n", 58: "m",
 
 	// Special keys
-	9:  "Escape",
-	22: "BackSpace",
-	23: "Tab",
-	36: "Return",
-	65: "space",
-	66: "Caps_Lock",
+	9:   "Escape",
+	22:  "BackSpace",
+	23:  "Tab",
+	36:  "Return",
+	65:  "space",
+	66:  "Caps_Lock",
 	119: "Delete",
 
 	// Modifiers
@@ -417,10 +416,10 @@ var x11KeycodeMap = map[int]string{
 	79: "KP_7", 80: "KP_8", 81: "KP_9",
 	83: "KP_4", 84: "KP_5", 85: "KP_6",
 	87: "KP_1", 88: "KP_2", 89: "KP_3",
-	90: "KP_0",
-	82: "KP_Subtract",
-	86: "KP_Add",
-	91: "KP_Decimal",
+	90:  "KP_0",
+	82:  "KP_Subtract",
+	86:  "KP_Add",
+	91:  "KP_Decimal",
 	104: "KP_Enter",
 	106: "KP_Divide",
 	63:  "KP_Multiply",

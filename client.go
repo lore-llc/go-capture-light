@@ -72,24 +72,19 @@ type VideoSegment struct {
 // actionToServerFormat converts an InputAction to the server's StreamAction shape:
 // { "type": "...", "timestamp": "...", "metadata": { "x": ..., "y": ..., "key": ..., "modifiers": [...] } }
 func actionToServerFormat(a InputAction) map[string]interface{} {
-	meta := map[string]interface{}{}
-	if a.X != 0 || a.Y != 0 {
-		meta["x"] = a.X
-		meta["y"] = a.Y
-	}
-	if a.Key != "" {
-		meta["key"] = a.Key
-	}
-	if len(a.Modifiers) > 0 {
-		meta["modifiers"] = a.Modifiers
-	}
-
 	doc := map[string]interface{}{
 		"type":      a.Type,
 		"timestamp": a.Timestamp,
 	}
-	if len(meta) > 0 {
-		doc["metadata"] = meta
+	if a.X != 0 || a.Y != 0 {
+		doc["x"] = a.X
+		doc["y"] = a.Y
+	}
+	if a.Key != "" {
+		doc["key"] = a.Key
+	}
+	if len(a.Modifiers) > 0 {
+		doc["modifiers"] = a.Modifiers
 	}
 	return doc
 }
@@ -129,7 +124,7 @@ func (c *Client) SendSegment(sessionID string, segmentIndex int, tsData []byte, 
 	return c.doJSON("POST", path, batch, nil)
 }
 
-// doJSON makes an authenticated JSON request.
+// doJSON makes a JSON request.
 func (c *Client) doJSON(method, path string, body interface{}, result interface{}) error {
 	var bodyReader io.Reader
 	if body != nil {
